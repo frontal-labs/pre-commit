@@ -1,0 +1,7 @@
+- id: frontal-lint
+  name: Frontal lint
+  description: Lint with Frontal
+  entry: frontal lint
+  language: system
+  types_or: [python, javascript, typescript]
+  stages: [pre-commit]

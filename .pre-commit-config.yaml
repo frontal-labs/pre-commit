@@ -1,0 +1,98 @@
+# Pre-commit framework configuration
+fail_fast: false
+default_install_hook_types: [pre-commit, commit-msg]
+
+repos:
+  # Biome (JS/TS/JSON/YAML)
+  - repo: local
+    hooks:
+      - id: biome-check
+        name: biome check
+        entry: bunx biome check --write --no-errors-on-unmatched
+        language: system
+        files: \.(ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc|yaml|yml)$
+        stages: [pre-commit]
+
+      - id: biome-format
+        name: biome format
+        entry: bunx biome format --write --no-errors-on-unmatched
+        language: system
+        files: \.(ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc|yaml|yml)$
+        stages: [pre-commit]
+
+  # Rust
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt
+        language: system
+        files: \.rs$
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy -- -D warnings
+        language: system
+        files: \.rs$
+        pass_filenames: false
+        stages: [pre-commit]
+
+  # Go
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: gofmt -w
+        language: system
+        files: \.go$
+        stages: [pre-commit]
+
+      - id: goimports
+        name: goimports
+        entry: goimports -w
+        language: system
+        files: \.go$
+        stages: [pre-commit]
+
+      - id: golangci-lint
+        name: golangci-lint
+        entry: golangci-lint run --fix
+        language: system
+        files: \.go$
+        pass_filenames: false
+        stages: [pre-commit]
+
+  # Python
+  - repo: local
+    hooks:
+      - id: ruff-lint
+        name: ruff lint
+        entry: ruff check --fix
+        language: system
+        files: \.py$
+        stages: [pre-commit]
+
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format
+        language: system
+        files: \.py$
+        stages: [pre-commit]
+
+      - id: black
+        name: black
+        entry: black
+        language: system
+        files: \.py$
+        stages: [pre-commit]
+
+  # Conventional Commits
+  - repo: local
+    hooks:
+      - id: commitlint
+        name: commitlint
+        entry: bunx commitlint --edit
+        language: system
+        stages: [commit-msg]
