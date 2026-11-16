@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const HOOKS_DIR = dirname(TEST_DIR);
+const REPO_ROOT = dirname(TEST_DIR);
 const FIXTURES = join(TEST_DIR, "fixtures");
 
 function listFiles(dir, prefix = "") {
@@ -121,7 +121,7 @@ function setupRepo(fixtureDir, repoDir) {
 	execFileSync("git", ["config", "user.name", "Test"], { cwd: repoDir });
 	execFileSync("git", ["add", "-A"], { cwd: repoDir });
 	// Copy hooks/ so relative paths in entry commands work
-	cpSync(join(HOOKS_DIR, "hooks"), join(repoDir, "hooks"), { recursive: true });
+	cpSync(join(REPO_ROOT, "hooks"), join(repoDir, "hooks"), { recursive: true });
 }
 
 function runHook(hook, repoDir, allFiles, extraArgs = []) {
