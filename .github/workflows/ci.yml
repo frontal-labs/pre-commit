@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Install the tools the hooks need. The hooks fail loudly when a tool
+      # is missing (ensure-tool.mjs), so the test suite only runs the cases
+      # whose tools are actually installed.
+      - name: Install ruff
+        run: pipx install ruff
+
+      - name: Install rustfmt + clippy
+        run: rustup component add rustfmt clippy
+
+      - name: Install buf
+        run: |
+          curl -sSL https://buf.build/install.sh | BUN_INSTALL="$HOME/.bun" sh
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+          buf --version
+
+      # go and cargo ship with the ubuntu-latest runner image.
+      # biome is not installed: those 2 test cases are SKIPPED, not failed.
+
+      - name: Run hook tests
+        run: npm test
