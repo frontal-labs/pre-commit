@@ -25,7 +25,7 @@ Add to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/frontal-labs/pre-commit
-    rev: v1.0.0
+    rev: v1.0.1
     hooks:
       - id: frontal-biome
       - id: frontal-ruff
@@ -52,7 +52,7 @@ Add a `remotes:` entry to your `lefthook.yml`:
 ```yaml
 remotes:
   - git_url: https://github.com/frontal-labs/pre-commit
-    ref: v1.0.0
+    ref: v1.0.1
     configs: [lefthook-remote.yml]
 ```
 

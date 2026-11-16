@@ -3,12 +3,22 @@
 # Usage in frontal/lefthook.yml:
 #   remotes:
 #     - git_url: https://github.com/frontal-labs/pre-commit
-#       ref: v1.0.0          # pin to a tag, not main
+#       ref: v1.0.1          # pin to a tag, not main
 #       configs: [lefthook-remote.yml]
 #
 # All commands are identical to the frontal lefthook.yml gates.
-# Tool presence is verified before each command runs; a missing tool fails
-# loudly rather than silently passing.
+#
+# Self-contained: every command is plain POSIX sh, because lefthook executes
+# `run:` with the CONSUMER repo as cwd (command.Dir = repo root). The remote
+# checkout lives under the consumer's .git/lefthook-remotes/ and is NOT on the
+# execution path, so no command may reference files in this repo — each gate
+# is inlined here and resolves the consumer's own Cargo.toml / go.mod /
+# buf.yaml. Tool presence is verified before each command runs; a missing tool
+# fails loudly rather than silently passing.
+#
+# Walk-up note: `git diff --cached --name-only` emits paths RELATIVE to the
+# repo root, so the bounded walk-up uses the path's own component depth as its
+# explicit limit (no `while true`; the loop terminates when `dir` reaches ".").
 
 pre-commit:
   parallel: true
@@ -57,38 +67,213 @@ pre-commit:
 
     # ---- Clippy (scoped per crate workspace) -----------------------------------
     # run-checks.mjs: rust:clippy:<workspace>
+    # Inlined from hooks/clippy-scoped.mjs: for each staged .rs file, walk up to
+    # the nearest ancestor Cargo.toml with a [workspace] section, read the crate
+    # name from the [package] section of that manifest, dedupe (workspace, crate)
+    # pairs, and run `cargo clippy -p <crates> --all-targets -- -D warnings` once
+    # per workspace with cwd = the workspace dir. A virtual workspace (no
+    # [package] at the root) yields no addressable crate and is skipped.
     frontal-clippy:
       glob: "*.rs"
       run: |
         if ! command -v cargo >/dev/null 2>&1; then
           echo "frontal-clippy: cargo not found on PATH" >&2; exit 1
         fi
-        node hooks/clippy-scoped.mjs
+        root=$(git rev-parse --show-toplevel)
+        files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' | grep -vE '(^|/)(gen|generated|vendor|node_modules)/' || true)
+        if [ -z "$files" ]; then echo "frontal-clippy: no staged Rust files — nothing to check" >&2; exit 0; fi
+        # Map: "rel-workspace<TAB>crate-name" lines, deduped by workspace+crate.
+        # Bounded walk-up: depth = number of path components, so the loop
+        # reaches "." (the repo root) and terminates — no unbounded loop.
+        pairs=$(
+          printf '%s\n' "$files" | while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            dir=$(dirname "$f")
+            depth=$(printf '%s\n' "$dir" | awk -F'/' '{print NF}')
+            i=0
+            while [ "$i" -le "$depth" ]; do
+              if [ -f "$root/$dir/Cargo.toml" ] && grep -qE '^[[:space:]]*\[workspace\]' "$root/$dir/Cargo.toml"; then
+                name=$(awk '/^[[:space:]]*\[package\]/{f=1;next} /^\[/{f=0} f&&/^[[:space:]]*name[[:space:]]*=/{s=$0;gsub(/.*name[[:space:]]*=[[:space:]]*"/,"",s);gsub(/".*/,"",s);print s;exit}' "$root/$dir/Cargo.toml")
+                [ -n "$name" ] && printf '%s\t%s\n' "$dir" "$name"
+                break
+              fi
+              [ "$dir" = "." ] && break
+              parent=$(dirname "$dir"); [ "$parent" = "$dir" ] && break
+              dir=$parent; i=$((i+1))
+            done
+          done | sort -u
+        )
+        if [ -z "$pairs" ]; then echo "frontal-clippy: no addressable crates in staged files — nothing to check" >&2; exit 0; fi
+        # Group crate names by workspace; run clippy once per workspace.
+        workspaces=$(printf '%s\n' "$pairs" | cut -f1 | sort -u)
+        for w in $workspaces; do
+          pflags=""
+          for c in $(printf '%s\n' "$pairs" | awk -F'\t' -v w="$w" '$1==w{print $2}' | sort -u); do
+            pflags="$pflags -p $c"
+          done
+          args="clippy$pflags --all-targets -- -D warnings"
+          echo "frontal-clippy: cargo $args  (in $w)" >&2
+          if ! (cd "$root/$w" && eval "cargo $args"); then
+            echo "  ✗ frontal-clippy: failed in $w" >&2; exit 1
+          fi
+        done
+        echo "frontal-clippy: ok" >&2
 
     # ---- Go vet (scoped per module) --------------------------------------------
     # run-checks.mjs: go:vet:<dir>
+    # Inlined from hooks/go-vet-scoped.mjs: for each staged .go file, walk up to
+    # the nearest ancestor go.mod, dedupe module dirs, run `go vet ./...` per
+    # module with cwd = the module dir. Excludes vendor/, gen/, generated/,
+    # node_modules/, docker/.
     frontal-go-vet:
       glob: "*.go"
       run: |
         if ! command -v go >/dev/null 2>&1; then
           echo "frontal-go-vet: go not found on PATH" >&2; exit 1
         fi
-        node hooks/go-vet-scoped.mjs
+        root=$(git rev-parse --show-toplevel)
+        files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.go' | grep -vE '(^|/)(vendor|gen|generated|node_modules|docker)/' || true)
+        if [ -z "$files" ]; then echo "frontal-go-vet: no staged Go files — nothing to check" >&2; exit 0; fi
+        dirs=$(
+          printf '%s\n' "$files" | while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            dir=$(dirname "$f")
+            depth=$(printf '%s\n' "$dir" | awk -F'/' '{print NF}')
+            i=0
+            while [ "$i" -le "$depth" ]; do
+              [ -f "$root/$dir/go.mod" ] && { [ "$dir" = "." ] && echo "." || echo "$dir"; break; }
+              [ "$dir" = "." ] && break
+              parent=$(dirname "$dir"); [ "$parent" = "$dir" ] && break
+              dir=$parent; i=$((i+1))
+            done
+          done | sort -u
+        )
+        if [ -z "$dirs" ]; then echo "frontal-go-vet: no Go module owns any staged file — nothing to check" >&2; exit 0; fi
+        for d in $dirs; do
+          echo "frontal-go-vet: go vet ./...  (in $d)" >&2
+          if ! (cd "$root/$d" && go vet ./...); then
+            echo "  ✗ frontal-go-vet: failed in $d" >&2; exit 1
+          fi
+        done
+        echo "frontal-go-vet: ok" >&2
 
     # ---- Buf lint (scoped per proto module) ------------------------------------
     # run-checks.mjs: proto:lint:<dir>
+    # Inlined from hooks/buf-lint-scoped.mjs: for each staged .proto file, walk
+    # up to the nearest ancestor buf.yaml. Modules listed in the ROOT buf.yaml
+    # are workspace members → single `buf lint` from repo root. Standalone
+    # modules (own buf.yaml, not in root workspace) → `buf lint` in the module
+    # dir. Excludes gen/, generated/, node_modules/, vendor/.
     frontal-buf-lint:
       glob: "*.proto"
       run: |
         if ! command -v buf >/dev/null 2>&1; then
           echo "frontal-buf-lint: buf not found on PATH" >&2; exit 1
         fi
-        node hooks/buf-lint-scoped.mjs
+        root=$(git rev-parse --show-toplevel)
+        files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.proto' | grep -vE '(^|/)(gen|generated|node_modules|vendor)/' || true)
+        if [ -z "$files" ]; then echo "frontal-buf-lint: no staged proto files — nothing to check" >&2; exit 0; fi
+        dirs=$(
+          printf '%s\n' "$files" | while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            dir=$(dirname "$f")
+            depth=$(printf '%s\n' "$dir" | awk -F'/' '{print NF}')
+            i=0
+            while [ "$i" -le "$depth" ]; do
+              [ -f "$root/$dir/buf.yaml" ] && { [ "$dir" = "." ] && echo "." || echo "$dir"; break; }
+              [ "$dir" = "." ] && break
+              parent=$(dirname "$dir"); [ "$parent" = "$dir" ] && break
+              dir=$parent; i=$((i+1))
+            done
+          done | sort -u
+        )
+        if [ -z "$dirs" ]; then echo "frontal-buf-lint: no proto module owns any staged file — nothing to check" >&2; exit 0; fi
+        # Workspace modules = the "  - path: X" list items directly under the
+        # TOP-LEVEL `modules:` key of the root buf.yaml.  The next top-level
+        # key ends the section, so `deps:` entries (bare BSR references like
+        # `  - buf.build/foo/bar`) can never be misread as modules —
+        # hooks/buf-lint-scoped.mjs documents this intent but its single
+        # regex over-matches; this bridge implements the documented behavior.
+        # (2-space-indented comments and nested keys such as `excludes:` are
+        # ignored while `modules:` is open.)
+        if [ -f "$root/buf.yaml" ]; then
+          wsmods=$(awk '
+            /^[^[:space:]]/ { inmod = 0 }
+            /^modules:/ { inmod = 1; next }
+            inmod && /^  - path:[[:space:]]/ {
+              line = $0
+              sub(/^  - path:[[:space:]]+/, "", line)
+              sub(/[[:space:]]+$/, "", line)
+              sub(/\/+$/, "", line)
+              print line
+            }
+          ' "$root/buf.yaml")
+        else
+          wsmods=""
+        fi
+        # Mirror hooks/buf-lint-scoped.mjs: modules whose path appears in the
+        # root buf.yaml workspace list → single `buf lint` from the root
+        # (covers all members); every other module dir → `buf lint` in that
+        # dir.  The root itself (".") counts as a workspace member only when
+        # the root buf.yaml is itself a module config (no top-level
+        # `modules:` key) — in which case a root `buf lint` covers it.
+        root_is_module=0
+        if [ -f "$root/buf.yaml" ] && ! grep -qE '^modules:' "$root/buf.yaml"; then
+          root_is_module=1
+        fi
+        inws=0
+        for d in $dirs; do
+          if { [ "$d" = "." ] && [ "$root_is_module" = "1" ]; } || { [ "$d" != "." ] && [ -n "$wsmods" ] && printf '%s\n' "$wsmods" | grep -qxF "$d"; }; then
+            inws=1
+          fi
+        done
+        if [ "$inws" = "1" ]; then
+          echo "frontal-buf-lint: buf lint  (repo root, workspace modules)" >&2
+          if ! (cd "$root" && buf lint); then
+            echo "  ✗ frontal-buf-lint: failed (workspace)" >&2; exit 1
+          fi
+        fi
+        for d in $dirs; do
+          if { [ "$d" = "." ] && [ "$root_is_module" = "1" ]; } || { [ "$d" != "." ] && [ -n "$wsmods" ] && printf '%s\n' "$wsmods" | grep -qxF "$d"; }; then
+            continue
+          fi
+          echo "frontal-buf-lint: buf lint  (in $d)" >&2
+          if ! (cd "$root/$d" && buf lint); then
+            echo "  ✗ frontal-buf-lint: failed in $d" >&2; exit 1
+          fi
+        done
+        echo "frontal-buf-lint: ok" >&2
 
 commit-msg:
   commands:
     # Replaces the local `conventional` command in frontal/lefthook.yml.
-    # Rules are identical to hooks/check-commit-message.mjs.
+    # Rules are identical to hooks/check-commit-message.mjs: strip comment lines
+    # and the scissors section, take the first non-blank line as the subject,
+    # exempt git-generated prefixes (Merge/Revert/fixup!/squash!/amend!),
+    # require a Conventional-Commit header, and enforce a 100-char subject cap.
     # {1} is the commit message file path (lefthook passes it as arg 1).
     frontal-commit-msg:
-      run: node hooks/check-commit-message.mjs {1}
+      run: |
+        msgfile="{1}"
+        if [ ! -f "$msgfile" ]; then echo "frontal-commit-msg: message file not found: $msgfile" >&2; exit 1; fi
+        body=$(grep -v '^#' "$msgfile" || true)
+        subject=$(printf '%s\n' "$body" | awk 'NF{print; exit}')
+        if [ -z "$subject" ]; then
+          echo "  ✗ commit message is empty" >&2; exit 1
+        fi
+        case "$subject" in
+          'Merge '*|'Revert "'*|'fixup! '*|'squash! '*|'amend! '*) exit 0 ;;
+        esac
+        if ! printf '%s\n' "$subject" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]*\))?!?: .+'; then
+          echo "  ✗ not a Conventional Commit: \"$subject\"" >&2
+          echo "    expected <type>(<scope>): <description>" >&2
+          echo "    types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert" >&2
+          echo "    example: fix(billing): reject subscriptions without a connection row" >&2
+          exit 1
+        fi
+        len=$(printf '%s' "$subject" | wc -c | tr -d '[:space:]')
+        if [ "$len" -gt 100 ]; then
+          echo "  ✗ subject is $len characters; keep it under 100" >&2
+          echo "    move detail into the commit body" >&2
+          exit 1
+        fi
