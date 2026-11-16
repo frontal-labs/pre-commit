@@ -1,0 +1,7 @@
+{
+  "extends": ["ultracite/biome/core"],
+  "files": {
+    // biome-ignore lint/suspicious/noBiomeFirstException: catch-all is required; without it, an `includes` list matches nothing
+    "includes": ["**", "!tests/fixtures"]
+  }
+}

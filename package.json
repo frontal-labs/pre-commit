@@ -1,18 +1,24 @@
 {
   "name": "frontal-pre-commit",
   "version": "1.0.0",
-  "description": "Frontal's git-hook gates, published as pre-commit hooks and a lefthook remote",
-  "type": "module",
-  "license": "MIT",
   "private": true,
-  "scripts": {
-    "test": "node tests/run-hooks.test.mjs"
-  },
-  "engines": {
-    "node": ">=22"
-  },
+  "description": "Frontal's git-hook gates, published as pre-commit hooks and a lefthook remote",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/frontal-labs/pre-commit.git"
+  },
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "check": "biome check --no-errors-on-unmatched",
+    "format": "biome check --write",
+    "test": "node tests/run-hooks.test.mjs"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.8",
+    "ultracite": "^8.2.1"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

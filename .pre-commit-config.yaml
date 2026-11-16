@@ -3,7 +3,7 @@
 # When you contribute to this repo, pre-commit will run the hooks against
 # your staged changes — the same hooks that external consumers use.
 fail_fast: false
-default_install_hook_types: [pre-commit, commit-msg]
+default_install_hook_types: [ pre-commit, commit-msg ]
 
 repos:
   - repo: local
@@ -14,7 +14,7 @@ repos:
         language: system
         files: \.(ts|tsx|js|jsx|json)$
         exclude: "^packages/design-system/"
-        stages: [pre-commit]
+        stages: [ pre-commit ]
 
       - id: frontal-ruff
         name: frontal ruff check + format
@@ -22,7 +22,7 @@ repos:
         language: system
         files: \.py$
         exclude: "(^|/)(vendor|gen|generated|node_modules)/"
-        stages: [pre-commit]
+        stages: [ pre-commit ]
 
       - id: frontal-rustfmt
         name: frontal rustfmt (staged)
@@ -30,7 +30,7 @@ repos:
         language: system
         files: \.rs$
         pass_filenames: false
-        stages: [pre-commit]
+        stages: [ pre-commit ]
 
       - id: frontal-clippy
         name: frontal cargo clippy (scoped)
@@ -38,7 +38,7 @@ repos:
         language: system
         files: \.rs$
         pass_filenames: false
-        stages: [pre-commit]
+        stages: [ pre-commit ]
 
       - id: frontal-go-vet
         name: frontal go vet (scoped)
@@ -46,7 +46,7 @@ repos:
         language: system
         files: \.go$
         pass_filenames: false
-        stages: [pre-commit]
+        stages: [ pre-commit ]
 
       - id: frontal-buf-lint
         name: frontal buf lint (scoped)
@@ -54,7 +54,7 @@ repos:
         language: system
         files: \.proto$
         pass_filenames: false
-        stages: [pre-commit]
+        stages: [ pre-commit ]
 
       - id: frontal-commit-msg
         name: frontal commit-msg (Conventional Commits)
@@ -64,4 +64,4 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
-        stages: [commit-msg]
+        stages: [ commit-msg ]

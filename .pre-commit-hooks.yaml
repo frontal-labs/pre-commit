@@ -12,16 +12,19 @@
 # Mirrors lefthook `biome`:
 #   glob:    *.{ts,tsx,js,jsx,json}
 #   exclude: ^packages/design-system/
-#   run:     pnpm exec biome check --no-errors-on-unmatched {staged_files}
+#   run:     biome check --no-errors-on-unmatched {staged_files}
 # Check-only (no --write); pre-commit passes staged files as arguments.
+# The ultracite preset lives in this repo's biome.json (consumers extend it
+# the same way: { "extends": ["ultracite/biome/core"] } + the two npm
+# devDependencies @biomejs/biome and ultracite).
 - id: frontal-biome
   name: frontal biome check
   description: Biome check (check-only) on staged JS/TS/JSON files
-  entry: sh -c 'node hooks/ensure-tool.mjs pnpm && pnpm exec biome check --no-errors-on-unmatched "$@"'
+  entry: sh -c 'node hooks/ensure-tool.mjs biome && biome check --no-errors-on-unmatched "$@"'
   language: system
   files: \.(ts|tsx|js|jsx|json)$
   exclude: "^packages/design-system/"
-  stages: [pre-commit]
+  stages: [ pre-commit ]
 
 # ---- Ruff (Python lint + format) ------------------------------------------
 # Mirrors lefthook `python-ruff` and `python-format`:
@@ -38,7 +41,7 @@
   language: system
   files: \.py$
   exclude: "(^|/)(vendor|gen|generated|node_modules)/"
-  stages: [pre-commit]
+  stages: [ pre-commit ]
 
 # ---- Rustfmt (staged files only) ------------------------------------------
 # Mirrors lefthook `rust-fmt`:
@@ -55,7 +58,7 @@
   language: system
   files: \.rs$
   pass_filenames: false
-  stages: [pre-commit]
+  stages: [ pre-commit ]
 
 # ---- Clippy (scoped per crate workspace) -----------------------------------
 # Mirrors run-checks.mjs `rust:clippy:<workspace>`:
@@ -72,7 +75,7 @@
   language: system
   files: \.rs$
   pass_filenames: false
-  stages: [pre-commit]
+  stages: [ pre-commit ]
 
 # ---- Go vet (scoped per module) --------------------------------------------
 # Mirrors run-checks.mjs `go:vet:<dir>`:
@@ -87,7 +90,7 @@
   language: system
   files: \.go$
   pass_filenames: false
-  stages: [pre-commit]
+  stages: [ pre-commit ]
 
 # ---- Buf lint (scoped per proto module) ------------------------------------
 # Mirrors run-checks.mjs `proto:lint:<dir>`:
@@ -102,7 +105,7 @@
   language: system
   files: \.proto$
   pass_filenames: false
-  stages: [pre-commit]
+  stages: [ pre-commit ]
 
 # ---- Commit message (Conventional Commits) ---------------------------------
 # Replaces commitlint.  Rules are identical to
@@ -118,4 +121,4 @@
   pass_filenames: false
   always_run: true
   language: system
-  stages: [commit-msg]
+  stages: [ commit-msg ]
