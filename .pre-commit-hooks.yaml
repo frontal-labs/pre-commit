@@ -1,7 +1,121 @@
-- id: frontal-lint
-  name: Frontal lint
-  description: Lint with Frontal
-  entry: frontal lint
+# ---------------------------------------------------------------------------
+# Frontal's git-hook gates, republished for external repositories.
+#
+# Source of truth: frontal/lefthook.yml + scripts/hooks/run-checks.mjs.
+# Do not add rules here that do not exist in those files.
+#
+# Every hook fails loudly when its tool is missing (hooks/ensure-tool.mjs).
+# Shared excludes: vendor/, gen/, generated/, node_modules/
+# ---------------------------------------------------------------------------
+
+# ---- Biome (JS/TS/JSON) ---------------------------------------------------
+# Mirrors lefthook `biome`:
+#   glob:    *.{ts,tsx,js,jsx,json}
+#   exclude: ^packages/design-system/
+#   run:     pnpm exec biome check --no-errors-on-unmatched {staged_files}
+# Check-only (no --write); pre-commit passes staged files as arguments.
+- id: frontal-biome
+  name: frontal biome check
+  description: Biome check (check-only) on staged JS/TS/JSON files
+  entry: sh -c 'node hooks/ensure-tool.mjs pnpm && pnpm exec biome check --no-errors-on-unmatched "$@"'
   language: system
-  types_or: [python, javascript, typescript]
+  files: \.(ts|tsx|js|jsx|json)$
+  exclude: "^packages/design-system/"
   stages: [pre-commit]
+
+# ---- Ruff (Python lint + format) ------------------------------------------
+# Mirrors lefthook `python-ruff` and `python-format`:
+#   glob:    *.py
+#   exclude: (^|/)(vendor|gen/python|generated)/
+#   run:     ruff check {staged_files}          (python-ruff)
+#   run:     ruff format --check {staged_files}  (python-format)
+# The two lefthook commands are merged here: ruff check && ruff format --check.
+# Black is intentionally absent — frontal uses ruff exclusively.
+- id: frontal-ruff
+  name: frontal ruff check + format
+  description: ruff check and ruff format --check on staged Python files
+  entry: sh -c 'node hooks/ensure-tool.mjs ruff && ruff check "$@" && ruff format --check "$@"'
+  language: system
+  files: \.py$
+  exclude: "(^|/)(vendor|gen|generated|node_modules)/"
+  stages: [pre-commit]
+
+# ---- Rustfmt (staged files only) ------------------------------------------
+# Mirrors lefthook `rust-fmt`:
+#   rust_files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs'
+#                | grep -vE '(^|/)gen/')
+#   printf '%s\n' "$rust_files" | xargs rustfmt --edition 2024 --check
+# Staged files only — never the whole workspace.
+# The sh -c wrapper re-reads the staged file list from git so that renames
+# (which pre-commit passes as "old new" pairs) do not confuse rustfmt.
+- id: frontal-rustfmt
+  name: frontal rustfmt (staged)
+  description: rustfmt --edition 2024 --check on staged Rust files only
+  entry: sh -c 'node hooks/ensure-tool.mjs rustfmt && rust_files=$(git diff --cached --name-only --diff-filter=ACMR -- "*.rs" | grep -vE "(^|/)gen/" || true); if [ -n "$rust_files" ]; then printf "%s\n" "$rust_files" | xargs rustfmt --edition 2024 --check; fi'
+  language: system
+  files: \.rs$
+  pass_filenames: false
+  stages: [pre-commit]
+
+# ---- Clippy (scoped per crate workspace) -----------------------------------
+# Mirrors run-checks.mjs `rust:clippy:<workspace>`:
+#   cwd:  <crate workspace dir>
+#   cmd:  cargo clippy -p <crate1> -p <crate2> … --all-targets -- -D warnings
+# For each staged .rs file, the owning workspace is resolved (nearest ancestor
+# Cargo.toml declaring [workspace]) and the crate name is read from its
+# Cargo.toml.  One clippy run per workspace covers all of its staged crates.
+# Toolchain is picked from the workspace directory (rust-toolchain.toml).
+- id: frontal-clippy
+  name: frontal cargo clippy (scoped)
+  description: cargo clippy --all-targets -D warnings on the crates that own staged Rust files
+  entry: sh -c 'node hooks/ensure-tool.mjs cargo && node hooks/clippy-scoped.mjs'
+  language: system
+  files: \.rs$
+  pass_filenames: false
+  stages: [pre-commit]
+
+# ---- Go vet (scoped per module) --------------------------------------------
+# Mirrors run-checks.mjs `go:vet:<dir>`:
+#   cwd:  <dir containing go.mod>
+#   cmd:  go vet ./...
+# For each staged .go file the owning Go module is resolved by walking up to
+# the nearest go.mod.  One `go vet ./...` per affected module.
+- id: frontal-go-vet
+  name: frontal go vet (scoped)
+  description: go vet ./... in each Go module that owns a staged Go file
+  entry: sh -c 'node hooks/ensure-tool.mjs go && node hooks/go-vet-scoped.mjs'
+  language: system
+  files: \.go$
+  pass_filenames: false
+  stages: [pre-commit]
+
+# ---- Buf lint (scoped per proto module) ------------------------------------
+# Mirrors run-checks.mjs `proto:lint:<dir>`:
+#   In-workspace modules  → buf lint from repo root (buf.yaml workspace)
+#   Standalone modules    → buf lint in the module directory
+# A module is in-workspace when its path appears in the root buf.yaml
+# modules list; otherwise it is linted module-scoped.
+- id: frontal-buf-lint
+  name: frontal buf lint (scoped)
+  description: buf lint for each proto module that owns a staged .proto file
+  entry: sh -c 'node hooks/ensure-tool.mjs buf && node hooks/buf-lint-scoped.mjs'
+  language: system
+  files: \.proto$
+  pass_filenames: false
+  stages: [pre-commit]
+
+# ---- Commit message (Conventional Commits) ---------------------------------
+# Replaces commitlint.  Rules are identical to
+# frontal/scripts/hooks/check-commit-message.mjs (copied verbatim into
+# hooks/check-commit-message.mjs in this repository).
+- id: frontal-commit-msg
+  name: frontal commit-msg (Conventional Commits)
+  description: Validate commit message against Conventional Commits (replaces commitlint)
+  # The hook reads the message from the file at $0 (pre-commit passes the
+  # commit-msg file as the first positional param, which `sh -c` consumes
+  # as $0), falling back to stdin for lefthook/piped use.
+  entry: sh -c 'node hooks/check-commit-message.mjs "$0"'
+  pass_filenames: false
+  always_run: true
+  language: system
+  stages: [commit-msg]

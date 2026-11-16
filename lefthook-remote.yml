@@ -1,0 +1,91 @@
+# Lefthook bridge for external repositories that use lefthook instead of pre-commit.
+#
+# Usage in frontal/lefthook.yml:
+#   remotes:
+#     - git_url: https://github.com/frontal-labs/pre-commit
+#       ref: v1.0.0          # pin to a tag, not main
+#       configs: [lefthook-remote.yml]
+#
+# All commands are identical to the frontal lefthook.yml gates.
+# Tool presence is verified before each command runs; a missing tool fails
+# loudly rather than silently passing.
+
+pre-commit:
+  parallel: true
+  commands:
+    # ---- Biome ---------------------------------------------------------------
+    # lefthook: biome
+    #   glob:    *.{ts,tsx,js,jsx,json}
+    #   exclude: ^packages/design-system/
+    #   run:     pnpm exec biome check --no-errors-on-unmatched {staged_files}
+    frontal-biome:
+      glob: "*.{ts,tsx,js,jsx,json}"
+      exclude: "^packages/design-system/"
+      run: |
+        if ! command -v pnpm >/dev/null 2>&1; then
+          echo "frontal-biome: pnpm not found on PATH" >&2; exit 1
+        fi
+        pnpm exec biome check --no-errors-on-unmatched {staged_files}
+
+    # ---- Ruff (Python lint + format) ------------------------------------------
+    # lefthook: python-ruff  (ruff check {staged_files})
+    # lefthook: python-format (ruff format --check {staged_files})
+    frontal-ruff:
+      glob: "*.py"
+      exclude: "(^|/)(vendor|gen|generated|node_modules)/"
+      run: |
+        if ! command -v ruff >/dev/null 2>&1; then
+          echo "frontal-ruff: ruff not found on PATH" >&2; exit 1
+        fi
+        ruff check {staged_files} && ruff format --check {staged_files}
+
+    # ---- Rustfmt (staged files only) ------------------------------------------
+    # lefthook: rust-fmt
+    frontal-rustfmt:
+      glob: "*.rs"
+      run: |
+        if ! command -v rustfmt >/dev/null 2>&1; then
+          echo "frontal-rustfmt: rustfmt not found on PATH" >&2; exit 1
+        fi
+        rust_files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' | grep -vE '(^|/)gen/' || true)
+        if [ -n "$rust_files" ]; then
+          printf '%s\n' "$rust_files" | xargs rustfmt --edition 2024 --check
+        fi
+
+    # ---- Clippy (scoped per crate workspace) -----------------------------------
+    # run-checks.mjs: rust:clippy:<workspace>
+    frontal-clippy:
+      glob: "*.rs"
+      run: |
+        if ! command -v cargo >/dev/null 2>&1; then
+          echo "frontal-clippy: cargo not found on PATH" >&2; exit 1
+        fi
+        node hooks/clippy-scoped.mjs
+
+    # ---- Go vet (scoped per module) --------------------------------------------
+    # run-checks.mjs: go:vet:<dir>
+    frontal-go-vet:
+      glob: "*.go"
+      run: |
+        if ! command -v go >/dev/null 2>&1; then
+          echo "frontal-go-vet: go not found on PATH" >&2; exit 1
+        fi
+        node hooks/go-vet-scoped.mjs
+
+    # ---- Buf lint (scoped per proto module) ------------------------------------
+    # run-checks.mjs: proto:lint:<dir>
+    frontal-buf-lint:
+      glob: "*.proto"
+      run: |
+        if ! command -v buf >/dev/null 2>&1; then
+          echo "frontal-buf-lint: buf not found on PATH" >&2; exit 1
+        fi
+        node hooks/buf-lint-scoped.mjs
+
+commit-msg:
+  commands:
+    # Replaces the local `conventional` command in frontal/lefthook.yml.
+    # Rules are identical to hooks/check-commit-message.mjs.
+    # {1} is the commit message file path (lefthook passes it as arg 1).
+    frontal-commit-msg:
+      run: node hooks/check-commit-message.mjs {1}
