@@ -19,6 +19,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+
+      # Dev dependencies bring @biomejs/biome (on node_modules/.bin, which the
+      # test runner prepends to PATH) and the ultracite preset used by biome.jsonc.
+      - name: Install dev dependencies
+        run: npm ci
 
       # Install the tools the hooks need. The hooks fail loudly when a tool
       # is missing (ensure-tool.mjs), so the test suite only runs the cases
@@ -36,7 +42,10 @@ jobs:
           buf --version
 
       # go and cargo ship with the ubuntu-latest runner image.
-      # biome is not installed: those 2 test cases are SKIPPED, not failed.
+      # biome comes from the devDependencies installed above (all 15 cases run).
+
+      - name: Run biome self-check
+        run: npm run check
 
       - name: Run hook tests
         run: npm test

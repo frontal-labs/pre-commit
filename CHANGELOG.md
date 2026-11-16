@@ -25,3 +25,6 @@ collection and a lefthook remote config.
 - Shared excludes: `vendor/`, `gen/`, `generated/`, `node_modules/`
 - `.pre-commit-hooks.yaml` — hook definitions for pre-commit consumers
 - GitHub Actions release workflow (tag-triggered)
+- Repo self-lints with Biome via the ultracite preset
+  (`biome.jsonc` extends `ultracite/biome/core`; `@biomejs/biome` +
+  `ultracite` as devDependencies, `npm run check` / `npm run format`)

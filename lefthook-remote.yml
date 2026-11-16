@@ -17,15 +17,18 @@ pre-commit:
     # lefthook: biome
     #   glob:    *.{ts,tsx,js,jsx,json}
     #   exclude: ^packages/design-system/
-    #   run:     pnpm exec biome check --no-errors-on-unmatched {staged_files}
+    #   run:     biome check --no-errors-on-unmatched {staged_files}
+    # The ultracite preset ships in this repo's biome.jsonc; consumers with
+    # their own config extend the same way:
+    #   { "extends": ["ultracite/biome/core"] } + @biomejs/biome & ultracite
     frontal-biome:
       glob: "*.{ts,tsx,js,jsx,json}"
       exclude: "^packages/design-system/"
       run: |
-        if ! command -v pnpm >/dev/null 2>&1; then
-          echo "frontal-biome: pnpm not found on PATH" >&2; exit 1
+        if ! command -v biome >/dev/null 2>&1; then
+          echo "frontal-biome: biome not found on PATH" >&2; exit 1
         fi
-        pnpm exec biome check --no-errors-on-unmatched {staged_files}
+        biome check --no-errors-on-unmatched {staged_files}
 
     # ---- Ruff (Python lint + format) ------------------------------------------
     # lefthook: python-ruff  (ruff check {staged_files})

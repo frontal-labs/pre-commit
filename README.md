@@ -8,7 +8,7 @@ config. Every hook fails loudly when its tool is missing — no silent passes.
 
 | ID | Description | Tool |
 |---|---|---|
-| `frontal-biome` | Biome check (check-only) on staged JS/TS/JSON files | `pnpm exec biome` |
+| `frontal-biome` | Biome check (check-only) on staged JS/TS/JSON files | `biome` |
 | `frontal-ruff` | `ruff check` + `ruff format --check` on staged Python files | `ruff` |
 | `frontal-rustfmt` | `rustfmt --edition 2024 --check` on staged Rust files only | `rustfmt` |
 | `frontal-clippy` | `cargo clippy --all-targets -D warnings` scoped to the crate workspaces that own staged Rust files | `cargo clippy` |
@@ -81,13 +81,13 @@ steps:
 ```
 
 Adjust the install steps for whichever tools your enabled hooks require
-(`pnpm` + `biome`, `rustfmt`, `cargo clippy`, `go`, `buf`, etc.).
+(`biome`, `rustfmt`, `cargo clippy`, `go`, `buf`, etc.).
 
 ## Tool requirements
 
 Each hook requires its tool on `PATH`:
 
-- **frontal-biome**: `pnpm` (runs `biome` via `pnpm exec`)
+- **frontal-biome**: `biome` (`npx @biomejs/biome` or a global install)
 - **frontal-ruff**: `ruff`
 - **frontal-rustfmt**: `rustfmt`
 - **frontal-clippy**: `cargo` + the `clippy` component (`rustup component add clippy`)
@@ -101,12 +101,15 @@ skipping silently.
 ## Development
 
 ```sh
-# Run the full test suite (15 cases; 2 skipped if biome is not installed)
-node tests/run-hooks.test.mjs
-
-# Run a single case
-node tests/run-hooks.test.mjs clippy-fail --debug
+npm install            # dev deps: @biomejs/biome + ultracite (needed for biome cases)
+npm test               # full suite: 15 cases (biome skipped if its tool is missing)
+npm run check          # biome self-check of this repo's hooks/ + tests/
+node tests/run-hooks.test.mjs clippy-fail --debug   # single case, keep the repo
 ```
+
+This repo lints and formats its own `hooks/` and `tests/` with the same
+ultracite preset the `frontal-biome` hook runs for consumers
+(`biome.jsonc` extends `ultracite/biome/core`).
 
 Fixtures live in `tests/fixtures/`.  Each fixture is a minimal repo shape that
 the hook must accept (pass) or reject (fail).
