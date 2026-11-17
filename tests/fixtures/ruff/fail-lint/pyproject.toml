@@ -1,0 +1,3 @@
+[project]
+name = "ruff-fail-lint"
+version = "1.0.0"

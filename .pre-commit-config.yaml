@@ -1,98 +1,67 @@
-# Pre-commit framework configuration
+# Pre-commit framework configuration for this repository (self-test).
+#
+# When you contribute to this repo, pre-commit will run the hooks against
+# your staged changes — the same hooks that external consumers use.
 fail_fast: false
-default_install_hook_types: [pre-commit, commit-msg]
+default_install_hook_types: [ pre-commit, commit-msg ]
 
 repos:
-  # Biome (JS/TS/JSON/YAML)
   - repo: local
     hooks:
-      - id: biome-check
-        name: biome check
-        entry: bunx biome check --write --no-errors-on-unmatched
+      - id: frontal-biome
+        name: frontal biome check
+        entry: sh -c 'node hooks/ensure-tool.mjs pnpm && pnpm exec biome check --no-errors-on-unmatched "$@"'
         language: system
-        files: \.(ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc|yaml|yml)$
-        stages: [pre-commit]
+        files: \.(ts|tsx|js|jsx|json)$
+        exclude: "^packages/design-system/"
+        stages: [ pre-commit ]
 
-      - id: biome-format
-        name: biome format
-        entry: bunx biome format --write --no-errors-on-unmatched
+      - id: frontal-ruff
+        name: frontal ruff check + format
+        entry: sh -c 'node hooks/ensure-tool.mjs ruff && ruff check "$@" && ruff format --check "$@"'
         language: system
-        files: \.(ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc|yaml|yml)$
-        stages: [pre-commit]
+        files: \.py$
+        exclude: "(^|/)(vendor|gen|generated|node_modules)/"
+        stages: [ pre-commit ]
 
-  # Rust
-  - repo: local
-    hooks:
-      - id: cargo-fmt
-        name: cargo fmt
-        entry: cargo fmt
+      - id: frontal-rustfmt
+        name: frontal rustfmt (staged)
+        entry: sh -c 'node hooks/ensure-tool.mjs rustfmt && rust_files=$(git diff --cached --name-only --diff-filter=ACMR -- "*.rs" | grep -vE "(^|/)gen/" || true); if [ -n "$rust_files" ]; then printf "%s\n" "$rust_files" | xargs rustfmt --edition 2024 --check; fi'
         language: system
         files: \.rs$
         pass_filenames: false
-        stages: [pre-commit]
+        stages: [ pre-commit ]
 
-      - id: cargo-clippy
-        name: cargo clippy
-        entry: cargo clippy -- -D warnings
+      - id: frontal-clippy
+        name: frontal cargo clippy (scoped)
+        entry: sh -c 'node hooks/ensure-tool.mjs cargo && node hooks/clippy-scoped.mjs'
         language: system
         files: \.rs$
         pass_filenames: false
-        stages: [pre-commit]
+        stages: [ pre-commit ]
 
-  # Go
-  - repo: local
-    hooks:
-      - id: gofmt
-        name: gofmt
-        entry: gofmt -w
-        language: system
-        files: \.go$
-        stages: [pre-commit]
-
-      - id: goimports
-        name: goimports
-        entry: goimports -w
-        language: system
-        files: \.go$
-        stages: [pre-commit]
-
-      - id: golangci-lint
-        name: golangci-lint
-        entry: golangci-lint run --fix
+      - id: frontal-go-vet
+        name: frontal go vet (scoped)
+        entry: sh -c 'node hooks/ensure-tool.mjs go && node hooks/go-vet-scoped.mjs'
         language: system
         files: \.go$
         pass_filenames: false
-        stages: [pre-commit]
+        stages: [ pre-commit ]
 
-  # Python
-  - repo: local
-    hooks:
-      - id: ruff-lint
-        name: ruff lint
-        entry: ruff check --fix
+      - id: frontal-buf-lint
+        name: frontal buf lint (scoped)
+        entry: sh -c 'node hooks/ensure-tool.mjs buf && node hooks/buf-lint-scoped.mjs'
         language: system
-        files: \.py$
-        stages: [pre-commit]
+        files: \.proto$
+        pass_filenames: false
+        stages: [ pre-commit ]
 
-      - id: ruff-format
-        name: ruff format
-        entry: ruff format
+      - id: frontal-commit-msg
+        name: frontal commit-msg (Conventional Commits)
+        # The commit-msg file arrives as the first positional param, which
+        # `sh -c` consumes as $0.  The hook reads from that path (or stdin).
+        entry: sh -c 'node hooks/check-commit-message.mjs "$0"'
         language: system
-        files: \.py$
-        stages: [pre-commit]
-
-      - id: black
-        name: black
-        entry: black
-        language: system
-        files: \.py$
-        stages: [pre-commit]
-
-  # Conventional Commits
-  - repo: local
-    hooks:
-      - id: commitlint
-        name: commitlint
-        entry: bunx commitlint --edit
-        language: system
-        stages: [commit-msg]
+        pass_filenames: false
+        always_run: true
+        stages: [ commit-msg ]

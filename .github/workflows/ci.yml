@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Dev dependencies bring @biomejs/biome (on node_modules/.bin, which the
+      # test runner prepends to PATH) and the ultracite preset used by biome.jsonc.
+      - name: Install dev dependencies
+        run: npm ci
+
+      # Install the tools the hooks need. The hooks fail loudly when a tool
+      # is missing (ensure-tool.mjs), so the test suite only runs the cases
+      # whose tools are actually installed.
+      - name: Install ruff
+        run: pipx install ruff
+
+      - name: Install rustfmt + clippy
+        run: rustup component add rustfmt clippy
+
+      # Install buf from the official GitHub release binary. The old
+      # https://buf.build/install.sh installer URL now returns an HTML page
+      # (not a script), so download the pinned release binary directly
+      # instead. curl -f fails the step on any HTTP error.
+      - name: Install buf
+        run: |
+          BUF_VERSION="1.75.0"
+          mkdir -p "$HOME/.buf/bin"
+          curl -fsSL -o "$HOME/.buf/bin/buf" \
+            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-$(uname -s)-$(uname -m)"
+          chmod +x "$HOME/.buf/bin/buf"
+          echo "$HOME/.buf/bin" >> "$GITHUB_PATH"
+
+      - name: Verify buf
+        run: buf --version
+
+      # go and cargo ship with the ubuntu-latest runner image.
+      # biome comes from the devDependencies installed above (all 15 cases run).
+
+      - name: Run biome self-check
+        run: npm run check
+
+      - name: Run hook tests
+        run: npm test

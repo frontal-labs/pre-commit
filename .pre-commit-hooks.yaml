@@ -1,7 +1,135 @@
-- id: frontal-lint
-  name: Frontal lint
-  description: Lint with Frontal
-  entry: frontal lint
-  language: system
-  types_or: [python, javascript, typescript]
-  stages: [pre-commit]
+# ---------------------------------------------------------------------------
+# Frontal's git-hook gates, republished for external repositories.
+#
+# Source of truth: frontal/lefthook.yml + scripts/hooks/run-checks.mjs.
+# Do not add rules here that do not exist in those files.
+#
+# Every hook fails loudly when its tool is missing (hooks/ensure-tool.mjs).
+# Shared excludes: vendor/, gen/, generated/, node_modules/
+#
+# Each hook is `language: script`: pre-commit resolves the `entry` script to
+# an ABSOLUTE path inside the hook CHECKOUT (the runner's clone of this repo)
+# and executes it directly, with the CONSUMER repo as cwd.  Each script
+# resolves its `node hooks/…` calls against the checkout as an absolute path
+# (derived from the script's own location) WITHOUT changing the consumer's
+# working directory — so biome/ruff/scoped runners see the consumer repo as
+# their project root, exactly as the consumer's own config expects.
+# ---------------------------------------------------------------------------
+
+# ---- Biome (JS/TS/JSON) ---------------------------------------------------
+# Mirrors lefthook `biome`:
+#   glob:    *.{ts,tsx,js,jsx,json}
+#   exclude: ^packages/design-system/
+#   run:     biome check --no-errors-on-unmatched {staged_files}
+# Check-only (no --write); pre-commit passes staged files as arguments.
+# The ultracite preset lives in this repo's biome.json (consumers extend it
+# the same way: { "extends": ["ultracite/biome/core"] } + the two npm
+# devDependencies @biomejs/biome and ultracite).
+- id: frontal-biome
+  name: frontal biome check
+  description: Biome check (check-only) on staged JS/TS/JSON files
+  entry: hooks/biome.sh
+  language: script
+  files: \.(ts|tsx|js|jsx|json)$
+  exclude: "^packages/design-system/"
+  stages: [ pre-commit ]
+
+# ---- Ruff (Python lint + format) ------------------------------------------
+# Mirrors lefthook `python-ruff` and `python-format`:
+#   glob:    *.py
+#   exclude: (^|/)(vendor|gen/python|generated)/
+#   run:     ruff check {staged_files}          (python-ruff)
+#   run:     ruff format --check {staged_files}  (python-format)
+# The two lefthook commands are merged here: ruff check && ruff format --check.
+# Black is intentionally absent — frontal uses ruff exclusively.
+- id: frontal-ruff
+  name: frontal ruff check + format
+  description: ruff check and ruff format --check on staged Python files
+  entry: hooks/ruff.sh
+  language: script
+  files: \.py$
+  exclude: "(^|/)(vendor|gen|generated|node_modules)/"
+  stages: [ pre-commit ]
+
+# ---- Rustfmt (staged files only) ------------------------------------------
+# Mirrors lefthook `rust-fmt`:
+#   rust_files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs'
+#                | grep -vE '(^|/)gen/')
+#   printf '%s\n' "$rust_files" | xargs rustfmt --edition 2024 --check
+# Staged files only — never the whole workspace.
+# The script re-reads the staged file list from git so that renames (which
+# pre-commit passes as "old new" pairs) do not confuse rustfmt.
+- id: frontal-rustfmt
+  name: frontal rustfmt (staged)
+  description: rustfmt --edition 2024 --check on staged Rust files only
+  entry: hooks/rustfmt.sh
+  language: script
+  files: \.rs$
+  pass_filenames: false
+  stages: [ pre-commit ]
+
+# ---- Clippy (scoped per crate workspace) -----------------------------------
+# Mirrors run-checks.mjs `rust:clippy:<workspace>`:
+#   cwd:  <crate workspace dir>
+#   cmd:  cargo clippy -p <crate1> -p <crate2> … --all-targets -- -D warnings
+# For each staged .rs file, the owning workspace is resolved (nearest ancestor
+# Cargo.toml declaring [workspace]; this is the clippy working directory) and
+# the crate name is read from the nearest Cargo.toml declaring [package] (the
+# owning crate — a different manifest for workspace members).  One clippy run
+# per workspace covers all of its staged crates.
+# Toolchain is picked from the workspace directory (rust-toolchain.toml).
+- id: frontal-clippy
+  name: frontal cargo clippy (scoped)
+  description: cargo clippy --all-targets -D warnings on the crates that own staged Rust files
+  entry: hooks/clippy.sh
+  language: script
+  files: \.rs$
+  pass_filenames: false
+  stages: [ pre-commit ]
+
+# ---- Go vet (scoped per module) --------------------------------------------
+# Mirrors run-checks.mjs `go:vet:<dir>`:
+#   cwd:  <dir containing go.mod>
+#   cmd:  go vet ./...
+# For each staged .go file the owning Go module is resolved by walking up to
+# the nearest go.mod.  One `go vet ./...` per affected module.
+- id: frontal-go-vet
+  name: frontal go vet (scoped)
+  description: go vet ./... in each Go module that owns a staged Go file
+  entry: hooks/go-vet.sh
+  language: script
+  files: \.go$
+  pass_filenames: false
+  stages: [ pre-commit ]
+
+# ---- Buf lint (scoped per proto module) ------------------------------------
+# Mirrors run-checks.mjs `proto:lint:<dir>`:
+#   In-workspace modules  → buf lint from repo root (buf.yaml workspace)
+#   Standalone modules    → buf lint in the module directory
+# A module is in-workspace when its path appears in the root buf.yaml
+# modules list; otherwise it is linted module-scoped.
+- id: frontal-buf-lint
+  name: frontal buf lint (scoped)
+  description: buf lint for each proto module that owns a staged .proto file
+  entry: hooks/buf-lint.sh
+  language: script
+  files: \.proto$
+  pass_filenames: false
+  stages: [ pre-commit ]
+
+# ---- Commit message (Conventional Commits) ---------------------------------
+# Replaces commitlint.  Rules are identical to
+# frontal/scripts/hooks/check-commit-message.mjs (copied verbatim into
+# hooks/check-commit-message.mjs in this repository).
+- id: frontal-commit-msg
+  name: frontal commit-msg (Conventional Commits)
+  description: Validate commit message against Conventional Commits (replaces commitlint)
+  # The hook reads the message from the file passed by the runner.  With
+  # `language: script` the entry script is executed directly (no `--`
+  # placeholder), so the commit-msg file path arrives as the script's first
+  # positional arg ($1); the script resolves the checker against the checkout
+  # and passes the message path as its first argument.
+  entry: hooks/commit-msg.sh
+  language: script
+  always_run: true
+  stages: [ commit-msg ]
