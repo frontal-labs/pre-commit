@@ -6,6 +6,14 @@
  *   For each staged .go file, resolve the owning Go module by walking up to
  *   the nearest go.mod.  One `go vet ./...` per affected module.
  *
+ *   Modules whose sources are entirely generated (e.g. proto/contract modules
+ *   whose gen/ tree is gitignored) have no packages at all on a fresh clone,
+ *   and `go vet ./...` fails with "matched no packages" on content the author
+ *   never wrote. run-checks.mjs skips exactly those: `go list ./...` exiting 0
+ *   with empty stdout means the pattern matched nothing; a broken module
+ *   (bad go.mod, unresolvable dependency) makes `go list` exit non-zero and is
+ *   NOT skipped, so it still fails the gate.
+ *
  * Excluded: vendor/, gen/, generated/, node_modules/, docker/.
  */
 
@@ -90,7 +98,32 @@ try {
     });
   }
 
+  // Skip modules with no packages at all (generated-only, see header).
+  // A launch failure (no go toolchain) or non-zero exit leaves the module
+  // in the set — the vet check below remains the enforcement point.
+  const nonEmpty = new Set();
   for (const dir of dirs) {
+    const probe = spawnSync("go", ["list", "./..."], {
+      cwd: join(root, dir),
+      shell: false,
+      encoding: "utf8",
+    });
+    if (probe.error) {
+      nonEmpty.add(dir);
+    } else if (probe.status === 0 && (probe.stdout || "").trim() === "") {
+      process.stderr.write(
+        `frontal-go-vet: ${dir} has no packages — skipping\n`
+      );
+    } else {
+      nonEmpty.add(dir);
+    }
+  }
+  if (nonEmpty.size === 0) {
+    process.stderr.write("frontal-go-vet: ok\n");
+    process.exit(0);
+  }
+
+  for (const dir of nonEmpty) {
     process.stderr.write(`frontal-go-vet: go vet ./...  (in ${dir})\n`);
     const result = spawnSync("go", ["vet", "./..."], {
       cwd: join(root, dir),

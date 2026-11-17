@@ -52,7 +52,7 @@ jobs:
         run: buf --version
 
       # go and cargo ship with the ubuntu-latest runner image.
-      # biome comes from the devDependencies installed above (all 15 cases run).
+      # biome comes from the devDependencies installed above (all 17 cases run).
 
       - name: Run biome self-check
         run: npm run check

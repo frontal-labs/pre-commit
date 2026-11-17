@@ -15,6 +15,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const EXCLUDED = [
   /(?<prefix>^|\/)gen\//u,
@@ -25,6 +26,8 @@ const EXCLUDED = [
 
 const BUF_PATH_RE = /^\s{2}- path:\s*(?<path>\S+)\s*$/u;
 const TRAILING_SLASH_RE = /\/+$/u;
+const TOP_LEVEL_KEY_RE = /^\S/u;
+const MODULES_KEY_RE = /^modules\s*:/u;
 
 function git(args, cwd) {
   const result = spawnSync("git", args, {
@@ -41,7 +44,11 @@ function git(args, cwd) {
 
 /**
  * Module paths listed in the root buf.yaml workspace.
- * Parsed the same way as run-checks.mjs readWorkspaceModules().
+ *
+ * Section-scoped: only `  - path:` lines inside the top-level `modules:`
+ * section are collected. The section ends at the next top-level key (any
+ * non-indented, non-blank, non-comment line), so entries under `deps:` or
+ * elsewhere in the manifest can never be mistaken for workspace modules.
  */
 function readWorkspaceModules(root) {
   const paths = new Set();
@@ -49,8 +56,15 @@ function readWorkspaceModules(root) {
   if (!existsSync(manifest)) {
     return paths;
   }
+  let inModules = false;
   for (const line of readFileSync(manifest, "utf8").split("\n")) {
-    // Stop at the top-level deps:/lint: keys; - path: only appears under modules:
+    if (TOP_LEVEL_KEY_RE.test(line)) {
+      inModules = MODULES_KEY_RE.test(line);
+      continue;
+    }
+    if (!inModules) {
+      continue;
+    }
     const match = line.match(BUF_PATH_RE);
     if (match) {
       paths.add(match.groups.path.replace(TRAILING_SLASH_RE, ""));
@@ -82,64 +96,81 @@ function findProtoModule(file, root) {
   return null;
 }
 
-try {
-  const [root] = git(["rev-parse", "--show-toplevel"]);
-  const staged = git(
-    ["diff", "--cached", "--name-only", "--diff-filter=ACMR", "--", "*.proto"],
-    root
-  ).filter((f) => !EXCLUDED.some((p) => p.test(f)));
+// Only run the main body when executed directly (not when imported for
+// unit-testing readWorkspaceModules).
+const IS_ENTRY =
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
-  if (staged.length === 0) {
-    process.stderr.write(
-      "frontal-buf-lint: no staged proto files — nothing to check\n"
-    );
-    process.exit(0);
-  }
+if (IS_ENTRY) {
+  try {
+    const [root] = git(["rev-parse", "--show-toplevel"]);
+    const staged = git(
+      [
+        "diff",
+        "--cached",
+        "--name-only",
+        "--diff-filter=ACMR",
+        "--",
+        "*.proto",
+      ],
+      root
+    ).filter((f) => !EXCLUDED.some((p) => p.test(f)));
 
-  const dirs = [
-    ...new Set(staged.map((f) => findProtoModule(f, root)).filter(Boolean)),
-  ];
-  if (dirs.length === 0) {
-    process.stderr.write(
-      "frontal-buf-lint: no proto module owns any staged file — nothing to check\n"
-    );
-    process.exit(0);
-  }
-
-  const workspaceModules = readWorkspaceModules(root);
-  const inWorkspace = dirs.filter((dir) => workspaceModules.has(dir));
-  const standalone = dirs.filter((dir) => !workspaceModules.has(dir));
-
-  if (inWorkspace.length > 0) {
-    process.stderr.write(
-      "frontal-buf-lint: buf lint  (repo root, workspace modules)\n"
-    );
-    const result = spawnSync("buf", ["lint"], {
-      cwd: root,
-      shell: false,
-      stdio: "inherit",
-    });
-    if (result.status !== 0) {
-      process.stderr.write("\n  ✗ frontal-buf-lint: failed (workspace)\n");
-      process.exit(result.status ?? 1);
+    if (staged.length === 0) {
+      process.stderr.write(
+        "frontal-buf-lint: no staged proto files — nothing to check\n"
+      );
+      process.exit(0);
     }
-  }
 
-  for (const dir of standalone) {
-    process.stderr.write(`frontal-buf-lint: buf lint  (in ${dir})\n`);
-    const result = spawnSync("buf", ["lint"], {
-      cwd: join(root, dir),
-      shell: false,
-      stdio: "inherit",
-    });
-    if (result.status !== 0) {
-      process.stderr.write(`\n  ✗ frontal-buf-lint: failed in ${dir}\n`);
-      process.exit(result.status ?? 1);
+    const dirs = [
+      ...new Set(staged.map((f) => findProtoModule(f, root)).filter(Boolean)),
+    ];
+    if (dirs.length === 0) {
+      process.stderr.write(
+        "frontal-buf-lint: no proto module owns any staged file — nothing to check\n"
+      );
+      process.exit(0);
     }
-  }
 
-  process.stderr.write("frontal-buf-lint: ok\n");
-} catch (error) {
-  process.stderr.write(`frontal-buf-lint: ${error.message}\n`);
-  process.exit(1);
+    const workspaceModules = readWorkspaceModules(root);
+    const inWorkspace = dirs.filter((dir) => workspaceModules.has(dir));
+    const standalone = dirs.filter((dir) => !workspaceModules.has(dir));
+
+    if (inWorkspace.length > 0) {
+      process.stderr.write(
+        "frontal-buf-lint: buf lint  (repo root, workspace modules)\n"
+      );
+      const result = spawnSync("buf", ["lint"], {
+        cwd: root,
+        shell: false,
+        stdio: "inherit",
+      });
+      if (result.status !== 0) {
+        process.stderr.write("\n  ✗ frontal-buf-lint: failed (workspace)\n");
+        process.exit(result.status ?? 1);
+      }
+    }
+
+    for (const dir of standalone) {
+      process.stderr.write(`frontal-buf-lint: buf lint  (in ${dir})\n`);
+      const result = spawnSync("buf", ["lint"], {
+        cwd: join(root, dir),
+        shell: false,
+        stdio: "inherit",
+      });
+      if (result.status !== 0) {
+        process.stderr.write(`\n  ✗ frontal-buf-lint: failed in ${dir}\n`);
+        process.exit(result.status ?? 1);
+      }
+    }
+
+    process.stderr.write("frontal-buf-lint: ok\n");
+  } catch (error) {
+    process.stderr.write(`frontal-buf-lint: ${error.message}\n`);
+    process.exit(1);
+  }
 }
+
+export { readWorkspaceModules };

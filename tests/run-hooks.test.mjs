@@ -152,6 +152,19 @@ const CASES = [
   ["go-vet-fail", "go-vet/fail", "frontal-go-vet", false],
   ["buf-lint-pass", "buf-lint/pass", "frontal-buf-lint", true],
   ["buf-lint-fail", "buf-lint/fail", "frontal-buf-lint", false],
+  // v2 workspace with two modules (api/proto, gen/proto). The staged file
+  // is in api/proto; the hook must classify it as in-workspace and run
+  // `buf lint` from the repo root, which lints every workspace module.
+  // Both modules are lint-clean, so the root lint passes. (buf rejects
+  // `  - path:` lines under `deps:` in every version, so an end-to-end
+  // deps-bait fixture is unbuildable; the section-scoping of
+  // readWorkspaceModules is pinned by the buf-parse unit tests below.)
+  [
+    "buf-lint-pass-deps-not-modules",
+    "buf-lint/workspace-deps",
+    "frontal-buf-lint",
+    true,
+  ],
   ["commit-msg-pass", "commit-msg/pass", "frontal-commit-msg", true],
   ["commit-msg-fail", "commit-msg/fail", "frontal-commit-msg", false],
   // A CJK subject that is 74 UTF-16 units (passes the 100-unit cap) but 160
@@ -330,7 +343,72 @@ function runHook(hook, repoDir, allFiles, extraArgs = []) {
   };
 }
 
-function main() {
+function testReadWorkspaceModules(readWorkspaceModules) {
+  const cases = [
+    [
+      // Bait: indented `  - path:` lines outside the modules section.
+      [
+        "version: v2",
+        "deps:",
+        "  - path: legacy-bait",
+        "  - buf.build/googleapis/googleapis",
+        "modules:",
+        "  - path: api",
+        "  - path: gen",
+        "lint:",
+        "  use: [STANDARD]",
+      ],
+      ["api", "gen"],
+    ],
+    [
+      // Modules section with trailing blank/comment lines.
+      [
+        "version: v2",
+        "modules:",
+        "  - path: api",
+        "",
+        "  # comment",
+        "  - path: gen/",
+      ],
+      ["api", "gen"],
+    ],
+    [
+      // No modules key at all (standalone module manifest).
+      ["version: v2", "module: buf.build/x/y"],
+      [],
+    ],
+    [
+      // deps: section before modules: — the v1-era ordering.
+      [
+        "version: v1",
+        "deps:",
+        "  - buf.build/googleapis/googleapis",
+        "modules:",
+        "  - path: a",
+      ],
+      ["a"],
+    ],
+  ];
+
+  const failures = cases.map(([lines, expected]) => {
+    const dir = mkdtempSync(join(tmpdir(), "buf-parse-"));
+    try {
+      writeFileSync(join(dir, "buf.yaml"), `${lines.join("\n")}\n`);
+      const got = [...readWorkspaceModules(dir)].sort();
+      const want = [...expected].sort();
+      const ok = JSON.stringify(got) === JSON.stringify(want);
+      console.log(
+        `  ${ok ? "ok  " : "FAIL"}  buf-parse: got=[${got}] want=[${want}]`
+      );
+      return !ok;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  return failures.filter(Boolean).length;
+}
+
+async function main() {
   const args = process.argv.slice(2);
   const filter = args.find((a) => !a.startsWith("--"));
   const debug = args.includes("--debug");
@@ -480,7 +558,24 @@ function main() {
   console.log(
     `\n${passed}/${total} cases passed, ${failed} failed, ${skipped} skipped\n`
   );
-  process.exit(failed > 0 ? 1 : 0);
+
+  // Unit-test the section-scoped buf.yaml parser in buf-lint-scoped.mjs.
+  // A dynamic import is required because the file is ESM and exports
+  // readWorkspaceModules for this purpose.  The hook's top-level body is
+  // guarded by an entry-point check so the import is safe.
+  const bufMod = await import(join(REPO_ROOT, "hooks", "buf-lint-scoped.mjs"));
+  const bufParseFailures = testReadWorkspaceModules(
+    bufMod.readWorkspaceModules
+  );
+  if (bufParseFailures > 0) {
+    console.log(`\n${bufParseFailures} buf-parse unit test(s) failed\n`);
+    process.exitCode = 1;
+  } else {
+    console.log("\nbuf-parse: 4/4 unit tests passed\n");
+  }
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

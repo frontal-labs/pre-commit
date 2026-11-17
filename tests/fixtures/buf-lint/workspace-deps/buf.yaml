@@ -1,0 +1,14 @@
+# buf v2 workspace with two modules. Tests that the hook correctly
+# identifies in-workspace modules and runs `buf lint` from the repo root
+# (which lints every workspace module). Both modules are lint-clean; the
+# section-scoping of readWorkspaceModules is pinned separately by the
+# buf-parse unit tests in run-hooks.test.mjs (buf rejects `- path:` under
+# `deps:` in every version, so an end-to-end deps-bait fixture is
+# unbuildable).
+version: v2
+modules:
+  - path: api/proto
+  - path: gen/proto
+lint:
+  use:
+    - STANDARD

@@ -3,7 +3,7 @@
 # Usage in frontal/lefthook.yml:
 #   remotes:
 #     - git_url: https://github.com/frontal-labs/pre-commit
-#       ref: v1.0.1          # pin to a tag, not main
+#       ref: v1.0.2          # pin to a tag, not main
 #       configs: [lefthook-remote.yml]
 #
 # All commands are identical to the frontal lefthook.yml gates.
@@ -161,6 +161,9 @@ pre-commit:
     # the nearest ancestor go.mod, dedupe module dirs, run `go vet ./...` per
     # module with cwd = the module dir. Excludes vendor/, gen/, generated/,
     # node_modules/, docker/.
+    # Modules with no packages at all (generated-only, e.g. proto modules whose
+    # gen/ tree is gitignored) are skipped: `go list ./...` exiting 0 with empty
+    # output. A broken module makes `go list` exit non-zero and is NOT skipped.
     frontal-go-vet:
       glob: "*.go"
       run: |
@@ -185,7 +188,20 @@ pre-commit:
           done | sort -u
         )
         if [ -z "$dirs" ]; then echo "frontal-go-vet: no Go module owns any staged file — nothing to check" >&2; exit 0; fi
-        printf '%s\n' "$dirs" | while IFS= read -r d; do
+        vetdirs=$(
+          printf '%s\n' "$dirs" | while IFS= read -r d; do
+            [ -n "$d" ] || continue
+            if (cd "$root/$d" && go list ./...) >/tmp/.frontal-golist.$$ 2>/dev/null; then
+              [ -s /tmp/.frontal-golist.$$ ] && { echo "$d"; continue; }
+              echo "frontal-go-vet: $d has no packages — skipping" >&2
+            else
+              echo "$d"
+            fi
+            rm -f /tmp/.frontal-golist.$$
+          done
+        )
+        if [ -z "$vetdirs" ]; then echo "frontal-go-vet: ok" >&2; exit 0; fi
+        printf '%s\n' "$vetdirs" | while IFS= read -r d; do
           echo "frontal-go-vet: go vet ./...  (in $d)" >&2
           if ! (cd "$root/$d" && go vet ./...); then
             echo "  ✗ frontal-go-vet: failed in $d" >&2; exit 1
@@ -225,13 +241,14 @@ pre-commit:
         )
         if [ -z "$dirs" ]; then echo "frontal-buf-lint: no proto module owns any staged file — nothing to check" >&2; exit 0; fi
         # Workspace modules = the "  - path: X" list items directly under the
-        # TOP-LEVEL `modules:` key of the root buf.yaml.  The next top-level
-        # key ends the section, so `deps:` entries (bare BSR references like
-        # `  - buf.build/foo/bar`) can never be misread as modules —
-        # hooks/buf-lint-scoped.mjs documents this intent but its single
-        # regex over-matches; this bridge implements the documented behavior.
-        # (2-space-indented comments and nested keys such as `excludes:` are
-        # ignored while `modules:` is open.)
+        # TOP-LEVEL `modules:` key of the root buf.yaml.  The section ends at
+        # the next top-level key, so `  - path:` lines under `deps:` (or any
+        # other section) can never be misread as workspace modules —
+        # section-scoped, exactly like hooks/buf-lint-scoped.mjs.  (buf.yaml
+        # `deps:` entries are BSR references in v1 and `- path:` entries in
+        # v2 — the scoping keeps the bridge correct for both shapes.)
+        # Comments and nested keys such as `excludes:` are ignored while
+        # `modules:` is open.
         if [ -f "$root/buf.yaml" ]; then
           wsmods=$(awk '
             /^[^[:space:]]/ { inmod = 0 }

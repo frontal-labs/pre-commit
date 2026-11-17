@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.0.2 — 2026-11-17
+
+### Fixed
+
+- **`frontal-go-vet`: skip empty modules.**  Modules whose sources are
+  entirely generated (e.g. proto/contract modules whose `gen/` tree is
+  gitignored) have no packages on a fresh clone, and `go vet ./...` fails
+  with "matched no packages" on content the author never wrote.
+  `run-checks.mjs` skips exactly those: `go list ./...` exiting 0 with
+  empty stdout means the pattern matched nothing.  A broken module (bad
+  `go.mod`, unresolvable dependency) makes `go list` exit non-zero and is
+  NOT skipped, so it still fails the gate.  The same skip is replicated in
+  `lefthook-remote.yml`'s shell bridge (`/tmp/.frontal-golist.$$`).
+- **`frontal-buf-lint`: section-scoped workspace-module parsing.**
+  `hooks/buf-lint-scoped.mjs` previously collected every `  - path:` line
+  in the root `buf.yaml`, including entries under `deps:`.  The parser is
+  now section-scoped: only `  - path:` lines inside the top-level
+  `modules:` section are collected.  `readWorkspaceModules` is exported for
+  unit testing, and the hook's entry-point guard (`IS_ENTRY`) prevents the
+  main body from running on import.
+- **`lefthook-remote.yml` buf comment corrected.**  The v1.0.1 comment
+  claimed the node hook's regex over-matched; both the node hook and the
+  shell bridge are now section-scoped and consistent.
+
+### Added
+
+- **`buf-lint-pass-deps-not-modules` fixture + buf-parse unit tests.**
+  A clean two-module v2 workspace (`api/proto` + `gen/proto`, both
+  lint-clean) exercises workspace detection and root `buf lint`.
+  Four parser unit tests pin the section-scoping (deps-bait,
+  blank/comment lines, no-modules, v1 ordering).  An end-to-end
+  deps-bait fixture is unbuildable: buf 1.70 rejects `- path:` under
+  `deps:` in both v1 and v2 manifests.
+
+Verified: all 17 hook test cases + 4 buf-parse unit tests pass.
+
 ## 1.0.1 — 2026-11-16
 
 ### Fixed
