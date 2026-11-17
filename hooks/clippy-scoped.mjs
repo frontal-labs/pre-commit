@@ -4,8 +4,9 @@
  *
  * Mirrors run-checks.mjs `rust:clippy:<workspace>`:
  *   For each staged .rs file, resolve the owning workspace (nearest ancestor
- *   Cargo.toml declaring [workspace]) and the crate name.  One clippy run per
- *   workspace covers all of its staged crates together.
+ *   Cargo.toml declaring [workspace]; the clippy working directory) and the
+ *   owning crate (nearest ancestor Cargo.toml declaring [package]).  One
+ *   clippy run per workspace covers all of its staged crates together.
  *
  *   cargo clippy -p <crate1> -p <crate2> … --all-targets -- -D warnings
  *
@@ -27,6 +28,7 @@ const EXCLUDED = [
 ];
 
 const WORKSPACE_SECTION_RE = /^\s*\[workspace\]/mu;
+const PACKAGE_SECTION_RE = /^\s*\[package\]/mu;
 const CRATE_NAME_RE =
   /^\s*\[package\][\s\S]*?^\s*name\s*=\s*"(?<name>[^"]+)"/mu;
 
@@ -45,7 +47,9 @@ function git(args, cwd) {
 
 /**
  * Walk up from `file` to the nearest ancestor Cargo.toml that declares a
- * [workspace] section, stopping at (and including) `root`.
+ * [workspace] section, stopping at (and including) `root`.  The owning
+ * workspace is the clippy working directory, not necessarily the crate's own
+ * manifest.
  */
 function findRustWorkspace(file, root) {
   const rootResolved = resolve(root);
@@ -56,6 +60,31 @@ function findRustWorkspace(file, root) {
     if (existsSync(manifest)) {
       const text = readFileSync(manifest, "utf8");
       if (WORKSPACE_SECTION_RE.test(text)) {
+        const rel = relative(rootResolved, dir);
+        return rel === "" ? "." : rel.split(sep).join("/");
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      return null;
+    }
+    dir = parent;
+  }
+  return null;
+}
+
+/**
+ * Walk up from `file` to the nearest ancestor Cargo.toml that declares a
+ * [package] section (the owning crate), stopping at (and including) `root`.
+ */
+function findRustCrateDir(file, root) {
+  const rootResolved = resolve(root);
+  let dir = dirname(resolve(rootResolved, file));
+  while (dir === rootResolved || dir.startsWith(rootResolved + sep)) {
+    const manifest = join(dir, "Cargo.toml");
+    if (existsSync(manifest)) {
+      const text = readFileSync(manifest, "utf8");
+      if (PACKAGE_SECTION_RE.test(text)) {
         const rel = relative(rootResolved, dir);
         return rel === "" ? "." : rel.split(sep).join("/");
       }
@@ -99,12 +128,24 @@ try {
     if (!workspace) {
       continue; // no workspace manifest; Bazel owns this
     }
-    // The workspace dir holds the manifest that addresses this crate with
-    // `-p`.  In the self-workspace layout (a crate declaring its own
-    // [workspace] members = ["."]) that manifest also declares the [package].
-    const name = readCrateName(workspace, root);
+    // The crate name comes from the nearest Cargo.toml declaring [package]
+    // (the owning crate), which differs from the workspace dir for workspace
+    // members; it is addressable with `-p` only from within that workspace.
+    const crateDir = findRustCrateDir(file, root);
+    if (!crateDir) {
+      continue; // no [package] manifest; not addressable with -p
+    }
+    // crateDir and workspace are root-relative ("." for the root); compare
+    // resolved absolute paths so the check works for workspace = ".".
+    const crateAbs = resolve(root, crateDir);
+    const wsAbs = resolve(root, workspace);
+    const inWorkspace = crateAbs === wsAbs || crateAbs.startsWith(wsAbs + sep);
+    if (!inWorkspace) {
+      continue; // crate is not a member of its nearest workspace
+    }
+    const name = readCrateName(crateDir, root);
     if (!name) {
-      continue; // workspace root with no [package]; not addressable with -p
+      continue; // [package] with no parseable name; not addressable with -p
     }
     clippyCrates.set(workspace, [...(clippyCrates.get(workspace) ?? []), name]);
   }

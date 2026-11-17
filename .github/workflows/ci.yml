@@ -35,11 +35,21 @@ jobs:
       - name: Install rustfmt + clippy
         run: rustup component add rustfmt clippy
 
+      # Install buf from the official GitHub release binary. The old
+      # https://buf.build/install.sh installer URL now returns an HTML page
+      # (not a script), so download the pinned release binary directly
+      # instead. curl -f fails the step on any HTTP error.
       - name: Install buf
         run: |
-          curl -sSL https://buf.build/install.sh | BUN_INSTALL="$HOME/.bun" sh
-          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
-          buf --version
+          BUF_VERSION="1.75.0"
+          mkdir -p "$HOME/.buf/bin"
+          curl -fsSL -o "$HOME/.buf/bin/buf" \
+            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-$(uname -s)-$(uname -m)"
+          chmod +x "$HOME/.buf/bin/buf"
+          echo "$HOME/.buf/bin" >> "$GITHUB_PATH"
+
+      - name: Verify buf
+        run: buf --version
 
       # go and cargo ship with the ubuntu-latest runner image.
       # biome comes from the devDependencies installed above (all 15 cases run).

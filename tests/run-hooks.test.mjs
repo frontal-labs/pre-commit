@@ -17,11 +17,14 @@ import { execFileSync, spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -31,8 +34,6 @@ const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = dirname(TEST_DIR);
 const FIXTURES = join(TEST_DIR, "fixtures");
 
-/** Matches the `sh -c '<command>'` wrapper every hook entry uses. */
-const SH_C_RE = /^sh -c '(?<command>.*)'$/su;
 const TS_FILE_RE = /(?<ext>ts|tsx|js|jsx|json)$/u;
 const PY_FILE_RE = /\.py$/u;
 const EXCLUDED_PATH_RE =
@@ -58,7 +59,20 @@ function listFiles(dir, prefix = "") {
  */
 function toolAvailable(cmd, extraArgs = []) {
   const result = spawnSync(cmd, extraArgs, { encoding: "utf8" });
-  return result.error === undefined && result.status === 0;
+  if (result.error !== undefined) {
+    // Only a missing executable (ENOENT) means the tool is genuinely absent
+    // and the case should be skipped.  Other startup errors (EACCES =
+    // permission denied, ELOOP = too many symlinks, ...) mean the executable
+    // exists but cannot be launched; surface them as test errors instead of
+    // silently skipping.
+    if (result.error.code === "ENOENT") {
+      return false;
+    }
+    throw new Error(
+      `failed to launch ${cmd}: ${result.error.code ?? result.error.message}`
+    );
+  }
+  return result.status === 0;
 }
 
 const HOOK_TOOLS = {
@@ -73,10 +87,16 @@ const HOOK_TOOLS = {
   "frontal-commit-msg": () => toolAvailable("node", ["--version"]),
 };
 
+// Every published hook is `language: script`: pre-commit resolves `entry` to
+// an absolute path in the hook CHECKOUT and executes it directly (not via
+// `sh -c`), with the CONSUMER repo as cwd.  The wrapper resolves its node
+// scripts against the checkout as an absolute path (derived from its own
+// location) without changing the consumer's working directory.  The test
+// repo's `hooks/` copy IS the simulated checkout, so `REPO_ROOT` (the source
+// of that copy) is the checkout the wrapper resolves its scripts against.
 const HOOKS = {
   "frontal-biome": {
-    entry:
-      "sh -c 'node hooks/ensure-tool.mjs biome && biome check --no-errors-on-unmatched \"$@\"'",
+    script: "hooks/biome.sh",
     staged: (files) =>
       files.filter(
         (f) => TS_FILE_RE.test(f) && !f.startsWith("packages/design-system/")
@@ -84,38 +104,33 @@ const HOOKS = {
     pass_filenames: true,
   },
   "frontal-ruff": {
-    entry:
-      'sh -c \'node hooks/ensure-tool.mjs ruff && ruff check "$@" && ruff format --check "$@"\'',
+    script: "hooks/ruff.sh",
     staged: (files) =>
       files.filter((f) => PY_FILE_RE.test(f) && !EXCLUDED_PATH_RE.test(f)),
     pass_filenames: true,
   },
   "frontal-rustfmt": {
-    entry:
-      'sh -c \'node hooks/ensure-tool.mjs rustfmt && rust_files=$(git diff --cached --name-only --diff-filter=ACMR -- "*.rs" | grep -vE "(^|/)gen/" || true); if [ -n "$rust_files" ]; then printf "%s\\n" "$rust_files" | xargs rustfmt --edition 2024 --check; fi\'',
+    script: "hooks/rustfmt.sh",
     staged: () => [],
     pass_filenames: false,
   },
   "frontal-clippy": {
-    entry:
-      "sh -c 'node hooks/ensure-tool.mjs cargo && node hooks/clippy-scoped.mjs'",
+    script: "hooks/clippy.sh",
     staged: () => [],
     pass_filenames: false,
   },
   "frontal-go-vet": {
-    entry:
-      "sh -c 'node hooks/ensure-tool.mjs go && node hooks/go-vet-scoped.mjs'",
+    script: "hooks/go-vet.sh",
     staged: () => [],
     pass_filenames: false,
   },
   "frontal-buf-lint": {
-    entry:
-      "sh -c 'node hooks/ensure-tool.mjs buf && node hooks/buf-lint-scoped.mjs'",
+    script: "hooks/buf-lint.sh",
     staged: () => [],
     pass_filenames: false,
   },
   "frontal-commit-msg": {
-    entry: "sh -c 'node hooks/check-commit-message.mjs \"$0\"'",
+    script: "hooks/commit-msg.sh",
     staged: () => [],
     pass_filenames: false,
     is_commit_msg: true,
@@ -139,6 +154,16 @@ const CASES = [
   ["buf-lint-fail", "buf-lint/fail", "frontal-buf-lint", false],
   ["commit-msg-pass", "commit-msg/pass", "frontal-commit-msg", true],
   ["commit-msg-fail", "commit-msg/fail", "frontal-commit-msg", false],
+  // A CJK subject that is 74 UTF-16 units (passes the 100-unit cap) but 160
+  // UTF-8 bytes. Guards the shared checker's String.length measurement: a
+  // regression to counting bytes (like `wc -c` did in the lefthook bridge)
+  // would wrongly reject this subject, and the bridge is kept in sync with it.
+  [
+    "commit-msg-pass-utf16",
+    "commit-msg/pass-utf16",
+    "frontal-commit-msg",
+    true,
+  ],
 ];
 
 function setupRepo(fixtureDir, repoDir) {
@@ -150,37 +175,126 @@ function setupRepo(fixtureDir, repoDir) {
     cwd: repoDir,
   });
   execFileSync("git", ["config", "user.name", "Test"], { cwd: repoDir });
-  // Copy hooks/ so relative paths in entry commands work
+  // Copy hooks/ — the simulated hook CHECKOUT the wrappers resolve against.
   cpSync(join(REPO_ROOT, "hooks"), join(repoDir, "hooks"), { recursive: true });
+  // A consumer-root marker.  The wrappers resolve their scripts against the
+  // CHECKOUT (their own directory's parent), so a consumer-root `hooks/` file
+  // is invisible to them.  If a wrapper resolved scripts against the consumer
+  // cwd instead, it would find this file and the test would fail — proving
+  // checkout-resolution.
+  mkdirSync(join(repoDir, "hooks"), { recursive: true });
+  writeFileSync(
+    join(repoDir, "hooks", "__consumer_marker__.sh"),
+    "not-a-hook\n"
+  );
   // The biome hook resolves its config (biome.jsonc) and the ultracite preset
-  // through node_modules, so the throwaway repo needs both: a copy of the
-  // config and a symlink to this repo's node_modules.
-  cpSync(join(REPO_ROOT, "biome.jsonc"), join(repoDir, "biome.jsonc"));
-  symlinkSync(join(REPO_ROOT, "node_modules"), join(repoDir, "node_modules"));
+  // through node_modules.  We build a SELF-CONTAINED node_modules (a real
+  // directory tree, not a symlink) containing only the packages biome needs:
+  // a symlink to REPO_ROOT's node_modules would let biome's `includes: ["**"]`
+  // walk back to REPO_ROOT and lint its own files (including uncommitted
+  // working-tree edits), which is not hermetic.  Real copies cannot be walked
+  // out of.
+  const nmDir = join(repoDir, "node_modules");
+  mkdirSync(nmDir, { recursive: true });
+  // Copy the ultracite preset and its dependencies.
+  const ultracitePkg = JSON.parse(
+    readFileSync(
+      join(REPO_ROOT, "node_modules", "ultracite", "package.json"),
+      "utf8"
+    )
+  );
+  const ultraciteDeps = {
+    ...(ultracitePkg.dependencies ?? {}),
+    ...(ultracitePkg.peerDependencies ?? {}),
+  };
+  cpSync(
+    join(REPO_ROOT, "node_modules", "ultracite"),
+    join(nmDir, "ultracite"),
+    { recursive: true }
+  );
+  for (const dep of Object.keys(ultraciteDeps)) {
+    const src = join(REPO_ROOT, "node_modules", dep);
+    if (existsSync(src)) {
+      cpSync(src, join(nmDir, dep), { recursive: true });
+    }
+  }
+  // Provide node_modules/.bin/biome so the test's PATH (which prepends
+  // repoDir/node_modules/.bin) can find the biome executable.  Copy the real
+  // biome CLI package + its platform binary instead of symlinking: a symlink
+  // into REPO_ROOT would let biome resolve its location to the source repo,
+  // which is not hermetic.
+  const binDir = join(nmDir, ".bin");
+  mkdirSync(binDir, { recursive: true });
+  const biomePkgDir = join(REPO_ROOT, "node_modules", "@biomejs", "biome");
+  if (existsSync(biomePkgDir)) {
+    cpSync(biomePkgDir, join(nmDir, "@biomejs", "biome"), {
+      recursive: true,
+    });
+    const platformDir = join(
+      REPO_ROOT,
+      "node_modules",
+      `@biomejs/cli-${process.platform}-${process.arch}`
+    );
+    if (existsSync(platformDir)) {
+      cpSync(
+        platformDir,
+        join(nmDir, `@biomejs/cli-${process.platform}-${process.arch}`),
+        {
+          recursive: true,
+        }
+      );
+    }
+    symlinkSync(
+      join(nmDir, "@biomejs", "biome", "bin", "biome"),
+      join(binDir, "biome")
+    );
+  }
+  // Write a minimal, STANDALONE biome.jsonc for the consumer.  Intentionally
+  // no `extends`: ultracite's core preset uses `files.includes: ["**"]` plus
+  // `vcs.useIgnoreFile: true`, and when merged a consumer config's own
+  // `includes` the preset's `**` still applies — which would make biome
+  // lint the consumer's copied hooks/ (carrying REPO_ROOT's working-tree
+  // lint state) and drag in gitignore machinery.  A standalone config with
+  // an explicit file list keeps the consumer fully hermetic: biome only
+  // ever sees the staged fixture files.
+  writeFileSync(
+    join(repoDir, "biome.jsonc"),
+    `${JSON.stringify(
+      {
+        linter: { enabled: true },
+        formatter: { enabled: true, indentStyle: "space", indentWidth: 2 },
+        files: {
+          includes: ["**", "!**/node_modules", "!**/hooks"],
+        },
+      },
+      null,
+      2
+    )}\n`
+  );
   execFileSync("git", ["add", "-A"], { cwd: repoDir });
 }
 
 function runHook(hook, repoDir, allFiles, extraArgs = []) {
-  // Every hook entry is of the form `sh -c '<command>'`.  pre-commit
-  // executes it by appending the file list (or the commit-msg file) as
-  // positional params after the command string.  The first positional
-  // param lands in `$0`, the rest in `$@`.
+  // `language: script`: pre-commit execs the entry script directly (not via
+  // `sh -c`), resolving it to an absolute path in the checkout, with the
+  // CONSUMER repo as cwd.  `$0` is the script's own path; the staged files /
+  // the commit-msg path arrive as positional args $1…$n — there is no `--`
+  // placeholder.  The wrapper resolves its node scripts against the checkout
+  // (its own directory's parent) WITHOUT changing cwd, so the scoped tools
+  // see the consumer repo as their project root.
   //
-  // To avoid a double shell wrapper (which would consume the positional
-  // param as its own $0 and drop it), parse out the inner command and
-  // run `sh -c <command> [placeholder-$0] <files...>` directly.
+  //   - File-based hooks (biome, ruff): the staged files are the positional
+  //     args ($1…$n); the wrapper's `"$@"` is exactly that list.
+  //   - pass_filenames: false hooks (rustfmt, clippy, go-vet, buf-lint): no
+  //     file args — they read staged state from git themselves.
+  //   - commit-msg: the message path is the single positional arg ($1).
   //
-  // `sh -c 'cmd' a b c` assigns a→$0, b→$1, c→$2.  Hooks that reference
-  // `"$@"` (biome, ruff) expect *all* filenames there, so we pass a dummy
-  // placeholder for $0 and let the real files start at $1.  The commit-msg
-  // hook is the exception: it reads a single positional param as `$0`, so
-  // for that hook we pass the message path bare (it becomes $0, matching
-  // how pre-commit invokes commit-msg hooks).
-  const m = hook.entry.match(SH_C_RE);
-  if (!m) {
-    throw new Error(`unexpected entry format: ${hook.entry}`);
+  // We mirror this by invoking the wrapper (an absolute path in the
+  // REPO_ROOT checkout) directly, with cwd = consumer repo (repoDir).
+  const scriptPath = join(REPO_ROOT, hook.script);
+  if (!existsSync(scriptPath)) {
+    throw new Error(`wrapper script not found: ${scriptPath}`);
   }
-  const { command } = m.groups;
 
   let files = [];
   if (hook.is_commit_msg) {
@@ -196,11 +310,11 @@ function runHook(hook, repoDir, allFiles, extraArgs = []) {
     PATH: `${join(repoDir, "node_modules", ".bin")}:${process.env.PATH}`,
   };
 
-  // For commit-msg the single param is the message path and must land in $0.
-  // For file-based hooks a placeholder occupies $0 so "$@" sees every file.
-  const positional = hook.is_commit_msg ? files : ["$0-placeholder", ...files];
-
-  const result = spawnSync("sh", ["-c", command, ...positional], {
+  // No `--` placeholder: the staged files (or the commit-msg path) are the
+  // script's positional args $1..$n, exactly as `language: script` delivers
+  // them (the script's own path is $0).
+  const args = [...files];
+  const result = spawnSync(scriptPath, args, {
     cwd: repoDir,
     shell: false,
     encoding: "utf8",
@@ -209,6 +323,8 @@ function runHook(hook, repoDir, allFiles, extraArgs = []) {
   });
   return {
     status: result.status,
+    error: result.error,
+    signal: result.signal,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
   };
@@ -240,7 +356,22 @@ function main() {
     const hook = HOOKS[hookId];
 
     // Skip when the underlying tool is not installed on this machine.
-    if (!HOOK_TOOLS[hookId]()) {
+    // A genuinely missing executable (ENOENT) is skipped; any other startup
+    // error (e.g. EACCES) is a test error, not a skip.
+    let toolMissing;
+    try {
+      toolMissing = !HOOK_TOOLS[hookId]();
+    } catch (error) {
+      results.push({
+        caseId,
+        hookId,
+        status: "ERROR",
+        reason: error.message,
+      });
+      failed += 1;
+      continue;
+    }
+    if (toolMissing) {
       results.push({
         caseId,
         hookId,
@@ -262,17 +393,43 @@ function main() {
         : [];
       const result = runHook(hook, repoDir, allFiles, extraArgs);
 
-      const actualPass = result.status === 0;
-      const ok = actualPass === expectPass;
-
       if (debug) {
         process.stderr.write(
-          `\n===== ${caseId} (exit ${result.status}, expected ${expectPass ? "pass" : "fail"}) =====\n`
+          `\n===== ${caseId} (exit ${result.status ?? "n/a"}, signal ${result.signal ?? "none"}, expected ${expectPass ? "pass" : "fail"}) =====\n`
         );
         process.stderr.write(
           `--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}\n`
         );
       }
+
+      // Only classify PASS/FAIL when the process completed with an exit
+      // status.  A spawn error or signal termination (e.g. timeout kill)
+      // is an execution problem, not a hook result, so report it as ERROR.
+      if (result.error !== undefined) {
+        results.push({
+          caseId,
+          hookId,
+          status: "ERROR",
+          reason: `execution error: ${result.error.message}`,
+          output: (result.stderr || result.stdout).trim().slice(0, 300),
+        });
+        failed += 1;
+        continue;
+      }
+      if (result.status === null && result.signal !== null) {
+        results.push({
+          caseId,
+          hookId,
+          status: "ERROR",
+          reason: `terminated by signal: ${result.signal}`,
+          output: (result.stderr || result.stdout).trim().slice(0, 300),
+        });
+        failed += 1;
+        continue;
+      }
+
+      const actualPass = result.status === 0;
+      const ok = actualPass === expectPass;
 
       results.push({
         caseId,

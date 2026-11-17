@@ -39,8 +39,19 @@ repos:
 Then run:
 
 ```sh
+# pre-commit stage hooks (biome, ruff, rustfmt, clippy, go-vet, buf-lint)
 pre-commit install
+
+# commit-msg stage hook (frontal-commit-msg)
+pre-commit install --hook-type commit-msg
 ```
+
+Each hook's stage is declared in `.pre-commit-hooks.yaml` (all pre-commit
+hooks use `stages: [pre-commit]`, `frontal-commit-msg` uses
+`stages: [commit-msg]`), so the commit-msg dispatcher must be installed
+separately with `pre-commit install --hook-type commit-msg` — otherwise
+`frontal-commit-msg` is never registered.  If you drop `frontal-commit-msg`
+from your config, the second install line is not needed.
 
 Pick only the hooks you need.  All hooks are optional; include just the ones
 that apply to your repo.

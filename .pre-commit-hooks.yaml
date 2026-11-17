@@ -6,6 +6,14 @@
 #
 # Every hook fails loudly when its tool is missing (hooks/ensure-tool.mjs).
 # Shared excludes: vendor/, gen/, generated/, node_modules/
+#
+# Each hook is `language: script`: pre-commit resolves the `entry` script to
+# an ABSOLUTE path inside the hook CHECKOUT (the runner's clone of this repo)
+# and executes it directly, with the CONSUMER repo as cwd.  Each script
+# resolves its `node hooks/…` calls against the checkout as an absolute path
+# (derived from the script's own location) WITHOUT changing the consumer's
+# working directory — so biome/ruff/scoped runners see the consumer repo as
+# their project root, exactly as the consumer's own config expects.
 # ---------------------------------------------------------------------------
 
 # ---- Biome (JS/TS/JSON) ---------------------------------------------------
@@ -20,8 +28,8 @@
 - id: frontal-biome
   name: frontal biome check
   description: Biome check (check-only) on staged JS/TS/JSON files
-  entry: sh -c 'node hooks/ensure-tool.mjs biome && biome check --no-errors-on-unmatched "$@"'
-  language: system
+  entry: hooks/biome.sh
+  language: script
   files: \.(ts|tsx|js|jsx|json)$
   exclude: "^packages/design-system/"
   stages: [ pre-commit ]
@@ -37,8 +45,8 @@
 - id: frontal-ruff
   name: frontal ruff check + format
   description: ruff check and ruff format --check on staged Python files
-  entry: sh -c 'node hooks/ensure-tool.mjs ruff && ruff check "$@" && ruff format --check "$@"'
-  language: system
+  entry: hooks/ruff.sh
+  language: script
   files: \.py$
   exclude: "(^|/)(vendor|gen|generated|node_modules)/"
   stages: [ pre-commit ]
@@ -49,13 +57,13 @@
 #                | grep -vE '(^|/)gen/')
 #   printf '%s\n' "$rust_files" | xargs rustfmt --edition 2024 --check
 # Staged files only — never the whole workspace.
-# The sh -c wrapper re-reads the staged file list from git so that renames
-# (which pre-commit passes as "old new" pairs) do not confuse rustfmt.
+# The script re-reads the staged file list from git so that renames (which
+# pre-commit passes as "old new" pairs) do not confuse rustfmt.
 - id: frontal-rustfmt
   name: frontal rustfmt (staged)
   description: rustfmt --edition 2024 --check on staged Rust files only
-  entry: sh -c 'node hooks/ensure-tool.mjs rustfmt && rust_files=$(git diff --cached --name-only --diff-filter=ACMR -- "*.rs" | grep -vE "(^|/)gen/" || true); if [ -n "$rust_files" ]; then printf "%s\n" "$rust_files" | xargs rustfmt --edition 2024 --check; fi'
-  language: system
+  entry: hooks/rustfmt.sh
+  language: script
   files: \.rs$
   pass_filenames: false
   stages: [ pre-commit ]
@@ -65,14 +73,16 @@
 #   cwd:  <crate workspace dir>
 #   cmd:  cargo clippy -p <crate1> -p <crate2> … --all-targets -- -D warnings
 # For each staged .rs file, the owning workspace is resolved (nearest ancestor
-# Cargo.toml declaring [workspace]) and the crate name is read from its
-# Cargo.toml.  One clippy run per workspace covers all of its staged crates.
+# Cargo.toml declaring [workspace]; this is the clippy working directory) and
+# the crate name is read from the nearest Cargo.toml declaring [package] (the
+# owning crate — a different manifest for workspace members).  One clippy run
+# per workspace covers all of its staged crates.
 # Toolchain is picked from the workspace directory (rust-toolchain.toml).
 - id: frontal-clippy
   name: frontal cargo clippy (scoped)
   description: cargo clippy --all-targets -D warnings on the crates that own staged Rust files
-  entry: sh -c 'node hooks/ensure-tool.mjs cargo && node hooks/clippy-scoped.mjs'
-  language: system
+  entry: hooks/clippy.sh
+  language: script
   files: \.rs$
   pass_filenames: false
   stages: [ pre-commit ]
@@ -86,8 +96,8 @@
 - id: frontal-go-vet
   name: frontal go vet (scoped)
   description: go vet ./... in each Go module that owns a staged Go file
-  entry: sh -c 'node hooks/ensure-tool.mjs go && node hooks/go-vet-scoped.mjs'
-  language: system
+  entry: hooks/go-vet.sh
+  language: script
   files: \.go$
   pass_filenames: false
   stages: [ pre-commit ]
@@ -101,8 +111,8 @@
 - id: frontal-buf-lint
   name: frontal buf lint (scoped)
   description: buf lint for each proto module that owns a staged .proto file
-  entry: sh -c 'node hooks/ensure-tool.mjs buf && node hooks/buf-lint-scoped.mjs'
-  language: system
+  entry: hooks/buf-lint.sh
+  language: script
   files: \.proto$
   pass_filenames: false
   stages: [ pre-commit ]
@@ -114,11 +124,12 @@
 - id: frontal-commit-msg
   name: frontal commit-msg (Conventional Commits)
   description: Validate commit message against Conventional Commits (replaces commitlint)
-  # The hook reads the message from the file at $0 (pre-commit passes the
-  # commit-msg file as the first positional param, which `sh -c` consumes
-  # as $0), falling back to stdin for lefthook/piped use.
-  entry: sh -c 'node hooks/check-commit-message.mjs "$0"'
-  pass_filenames: false
+  # The hook reads the message from the file passed by the runner.  With
+  # `language: script` the entry script is executed directly (no `--`
+  # placeholder), so the commit-msg file path arrives as the script's first
+  # positional arg ($1); the script resolves the checker against the checkout
+  # and passes the message path as its first argument.
+  entry: hooks/commit-msg.sh
+  language: script
   always_run: true
-  language: system
   stages: [ commit-msg ]
